@@ -20,6 +20,8 @@
 #include "al/ui/al_Parameter.hpp"
 #include "al/io/al_MIDI.hpp"
 #include "al/math/al_Random.hpp"
+#include "al_ext/assets3d/al_Asset.hpp"
+
 
 using namespace al;
 using namespace std;
@@ -287,12 +289,14 @@ public:
   gam::EnvFollow<> mEnvFollow;
   // Draw parameters
   Mesh mMel;
+  vector<Mesh> melObj;
   double rotateA;
   double rotateB;
   double spin = al::rnd::uniformS();
   double timepose = 0;
   Vec3f note_position;
   Vec3f note_direction;
+  Scene *melscene{nullptr};
 
   void init() override
   {
@@ -300,10 +304,20 @@ public:
     mAmpEnv.levels(0, 1, 1, 0);
     mAmpEnv.sustainPoint(2);
  
-    //      mVibEnv.curve(0);
-    addCube(mMel);
-    mMel.decompress();
-    mMel.generateNormals();
+    //Graphics
+    std::string melFile = "../cloud_poly.obj"; 
+    melscene = Scene::import(melFile); 
+    if (!melscene) {
+      printf("error reading %s\n", melFile.c_str());
+      return;
+    }
+    melObj.resize(melscene->meshes());
+    for (int i = 0; i < melscene->meshes(); i += 1) {
+      melscene->mesh(i, melObj[i]);
+    }
+    //addCube(mMel);
+    //mMel.decompress();
+    //mMel.generateNormals();
 
     // Create parameters
     createInternalTriggerParameter("frequency", 440, 10, 4000.0);
@@ -348,7 +362,7 @@ public:
     float scaling = getInternalParameterValue("amplitude") / 10;
     g.scale(scaling + getInternalParameterValue("amplitude") , scaling + getInternalParameterValue("attackTime"), scaling + mEnvFollow.value() * 5);
     g.color(HSV(getInternalParameterValue("amplitude") * 20, getInternalParameterValue("releaseTime") * 20, 0.5 + getInternalParameterValue("pan")));
-    g.draw(mMel);
+    g.draw(melObj[0]);
     g.popMatrix();
   }
 
