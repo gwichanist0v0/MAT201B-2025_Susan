@@ -25,6 +25,7 @@ using namespace al;
 using namespace std;
 #define FFT_SIZE 4048
 
+//Self reminders: Needs to initialize a chord & melody 
 
 class NoteDecision 
 {
@@ -34,16 +35,30 @@ class NoteDecision
 
     
     //Self reminder add the 7th note
+    //V and V 64 are same chord and needs update since previous code bass note is always root
     std::map<std::string, std::vector<int>> chordDictionary = {
-      { "i",    {60, 64, 67, 48, 52, 55} },  // C E G (C4 + C3)
-      { "ii",   {62, 66, 69, 50, 54, 57} },  // D F# A  
-      { "iii",  {64, 67, 71, 52, 55, 59} },  // E G B
-      { "iv",   {66, 69, 72, 54, 57, 60} },  // F# A C
-      { "v",    {67, 71, 62, 55, 59, 50} },  // G B D
-      { "v64",  {62, 67, 71, 50, 55, 59} },  // D G B
-      { "vi",   {69, 72, 76, 57, 60, 64} },  // A C E
-      { "vii",  {71, 74, 69, 59, 62, 57} }   // B D A
+      { "i",    {48, 52, 55, 36, 40, 43} },  // C E G (C3 + C2) 1 maj
+      { "ii",   {50, 54, 57, 38, 42, 45} },  // D F# A 2 maj
+      { "iii",  {52, 55, 59, 40, 43, 47} },  // E G B 3 min
+      { "iv",   {54, 57, 60, 42, 45, 48} },  // F# A C 4 min
+      { "v",    {55, 59, 50, 43, 47, 38} },  // G B D 5 maj
+      { "v64",  {50, 55, 59, 38, 43, 47} },  // D G B 5 64 maj
+      { "vi",   {57, 60, 64, 45, 48, 52} },  // A C E 6 min
+      { "vii",  {59, 62, 57, 47, 50, 45} }   // B D A 7 dim
     };
+
+
+    std::map<std::string, std::vector<int>> melodyDictionary = {
+      { "i",    {60, 62, 64, 65, 67, 69, 71, 72, 74, 76, 77, 79, 81, 83, 84} }, // C major (Ionian)
+      { "ii",   {62, 64, 66, 67, 69, 71, 73, 74, 76, 78, 79, 81, 83, 85, 86} }, // D major
+      { "iii",  {64, 66, 67, 69, 71, 73, 75, 76, 78, 79, 81, 83, 85, 87, 88} }, // E minor
+      { "iv",   {66, 67, 69, 71, 72, 74, 76, 78, 79, 81, 83, 84, 86, 88, 90} }, // F# minor
+      { "v",    {67, 69, 71, 72, 74, 76, 78, 79, 81, 83, 84, 86, 88, 90, 91} }, // G major
+      { "v64",  {62, 64, 66, 67, 69, 71, 73, 74, 76, 78, 79, 81, 83, 85, 86} }, // D major (again)
+      { "vi",   {69, 71, 72, 74, 76, 78, 79, 81, 83, 84, 86, 88, 90, 91, 93} }, // A minor
+      { "vii",  {71, 72, 74, 76, 78, 79, 81, 83, 84, 86, 88, 90, 91, 93, 95} }  // B diminished (used like Locrian)
+    };
+
     
     std::vector<std::string> chordNames = {"i", "ii", "iii", "iv", "v", "v64", "vi", "vii"};
     static const int numChords = 8;
@@ -96,6 +111,60 @@ class NoteDecision
 
       return selectedNotes;
     }
+
+  std::vector<int> generateLSystemMelody(const std::string &chordName) {
+    // Terminal symbols: 5–15
+    std::map<int, std::vector<int>> rules = {
+        {0, {1, 2}},        // initial branching
+        {1, {5, 6}},        // terminal
+        {2, {3, 4}},        // leads to terminals
+        {3, {7, 8}},        // terminal
+        {4, {9, 10}},       // terminal
+        {5, {}}, {6, {}}, {7, {}}, {8, {}}, {9, {}}, {10, {}},
+        {11, {}}, {12, {}}, {13, {}}, {14, {}}, {15, {}}
+    };
+
+    std::vector<int> melody;
+    std::vector<int> tree;
+
+    // Start with a safe axiom
+    tree.push_back(0);
+
+    int iterations = 0;
+    const int maxIterations = 20;
+
+    while (!tree.empty() && melody.size() < 10 && iterations < maxIterations) {
+        int current = tree.front();
+        tree.erase(tree.begin());
+
+        if (rules.find(current) != rules.end() && !rules[current].empty()) {
+            std::vector<int> expansion = rules[current];
+            std::random_shuffle(expansion.begin(), expansion.end());
+            tree.insert(tree.end(), expansion.begin(), expansion.end());
+        } else {
+            melody.push_back(current);
+        }
+
+        iterations++;
+    }
+
+    // Fallback
+    if (melody.empty()) {
+        melody.push_back(rnd::uniform(5, 16)); // pick a terminal
+    }
+
+    // Convert to melody MIDI notes from melodyDictionary
+    const std::vector<int> &scale = melodyDictionary[chordName];
+    std::vector<int> finalMelody;
+    for (int symbol : melody) {
+        int index = symbol % scale.size(); // safely wrap
+        finalMelody.push_back(scale[index]);
+    }
+
+    return finalMelody;
+  }
+
+
 
 
 
@@ -162,6 +231,7 @@ public:
       free();
   }
 
+  //Replace with obj
   void onProcess(Graphics &g) override
   {
     rotateA += 0.29;
@@ -174,8 +244,8 @@ public:
     g.rotate(rotateA, Vec3f(0, 1, 0));
     g.rotate(rotateB, Vec3f(1));
     float scaling = getInternalParameterValue("amplitude") / 10;
-    g.scale(scaling + getInternalParameterValue("amplitude") / 10, scaling + getInternalParameterValue("attackTime") / 30, scaling + mEnvFollow.value() * 5);
-    g.color(HSV(getInternalParameterValue("amplitude") / 20, getInternalParameterValue("releaseTime") / 20, 0.5 + getInternalParameterValue("pan")));
+    g.scale(scaling + getInternalParameterValue("amplitude") , scaling + getInternalParameterValue("attackTime"), scaling + mEnvFollow.value() * 5);
+    g.color(HSV(getInternalParameterValue("amplitude") * 100, getInternalParameterValue("releaseTime") * 20, 0.5 + getInternalParameterValue("pan")));
     g.draw(mHarm);
     g.popMatrix();
   }
@@ -206,11 +276,115 @@ public:
   
 };
 
+class Melody : public SynthVoice
+{
+public:
+// Unit generators
+  gam::Pan<> mPan;
+  gam::Saw<> mOsc;
+  gam::ADSR<> mAmpEnv;
+  // envelope follower to connect audio output to graphics
+  gam::EnvFollow<> mEnvFollow;
+  // Draw parameters
+  Mesh mMel;
+  double rotateA;
+  double rotateB;
+  double spin = al::rnd::uniformS();
+  double timepose = 0;
+  Vec3f note_position;
+  Vec3f note_direction;
+
+  void init() override
+  {
+    mAmpEnv.curve(0); // linear segments
+    mAmpEnv.levels(0, 1, 1, 0);
+    mAmpEnv.sustainPoint(2);
+ 
+    //      mVibEnv.curve(0);
+    addCube(mMel);
+    mMel.decompress();
+    mMel.generateNormals();
+
+    // Create parameters
+    createInternalTriggerParameter("frequency", 440, 10, 4000.0);
+    createInternalTriggerParameter("amplitude", 0.05, 0.0, 1.0);
+    createInternalTriggerParameter("attackTime", 0.1, 0.01, 3.0);
+    createInternalTriggerParameter("releaseTime", 0.5, 0.1, 10.0);
+    createInternalTriggerParameter("sustain", 0.65, 0.1, 1.0);
+    createInternalTriggerParameter("pan", 0.0, -1.0, 1.0);
+
+  }
+
+  void onProcess(AudioIOData &io) override
+  {
+    //Get Parameters
+    mOsc.freq(getInternalParameterValue("frequency"));
+    mPan.pos(getInternalParameterValue("pan"));
+    float amp = getInternalParameterValue("amplitude");
+    while (io())
+    {
+      float s1 = mOsc() * mAmpEnv() * amp;
+      float s2;
+      mEnvFollow(s1);
+      mPan(s1, s1, s2);
+      io.out(0) += s1;
+      io.out(1) += s2;
+    }
+    if (mAmpEnv.done() && (mEnvFollow.value() < 0.001))
+      free();
+  }
+
+  void onProcess(Graphics &g) override
+  {
+    rotateA += 0.29;
+    rotateB += 0.23;
+    timepose -= 0.06;
+    g.pushMatrix();
+    g.depthTesting(true);
+    g.lighting(true);
+    g.translate(timepose, getInternalParameterValue("frequency") / 200 - 3, -4);
+    g.rotate(rotateA, Vec3f(0, 1, 0));
+    g.rotate(rotateB, Vec3f(1));
+    float scaling = getInternalParameterValue("amplitude") / 10;
+    g.scale(scaling + getInternalParameterValue("amplitude") , scaling + getInternalParameterValue("attackTime"), scaling + mEnvFollow.value() * 5);
+    g.color(HSV(getInternalParameterValue("amplitude") * 20, getInternalParameterValue("releaseTime") * 20, 0.5 + getInternalParameterValue("pan")));
+    g.draw(mMel);
+    g.popMatrix();
+  }
+
+   void onTriggerOn() override
+  {
+    timepose = 10;
+    mAmpEnv.reset();
+
+    updateFromParameters();
+    
+  }
+
+  void onTriggerOff() override
+  {
+    mAmpEnv.triggerRelease();
+  }
+
+  void updateFromParameters()
+  {
+
+    mAmpEnv.attack(getInternalParameterValue("attackTime"));
+    mAmpEnv.release(getInternalParameterValue("releaseTime"));
+    mAmpEnv.sustain(getInternalParameterValue("sustain"));
+    
+    mPan.pos(getInternalParameterValue("pan"));
+  }
+
+
+};
+
 
 class MyApp : public App, public MIDIMessageHandler
 {
 public:
-  SynthGUIManager<Harm> synthManager{"Harm"};
+  SynthGUIManager<Harm> harmManager{"Harm"};
+  SynthGUIManager<Melody> melManager{"Melody"}; 
   RtMidiIn midiIn; // MIDI input carrier
   ParameterMIDI parameterMIDI;
   int midiNote;
@@ -223,13 +397,22 @@ public:
   bool navi = false;
   gam::STFT stft = gam::STFT(FFT_SIZE, FFT_SIZE / 4, 0, gam::HANN, gam::MAG_FREQ);
 
+  //Harmony related
   float timeSinceLastHarm = 0;
-  float triggerInterval = 2.0f;
+  float triggerInterval = 11.0f;
 
   NoteDecision noteDecision;
 
   int harmNote1;
   int harmNote2;
+
+  //Melody related
+  std::vector<int> currentMelody;
+  int currentMelodyIndex = 0;
+  float melodyTimeAccum = 0.0f;
+  float melodyNoteDuration = 1.0f; 
+  int currentMelNote = -1;
+
 
   void onInit() override
   {
@@ -265,13 +448,15 @@ public:
 
   void onCreate() override
   {
-    synthManager.synthRecorder().verbose(true);
+    harmManager.synthRecorder().verbose(true);
+    melManager.synthRecorder().verbose(true);
     nav().pos(3, 0, 17);
   }
 
   void onSound(AudioIOData &io) override
   {
-    synthManager.render(io); // Render audio
+    harmManager.render(io); // Render audio
+    melManager.render(io);
     // STFT
     while (io())
     {
@@ -293,7 +478,8 @@ public:
   {
     navControl().active(navi); // Disable navigation via keyboard, since we
     imguiBeginFrame();
-    synthManager.drawSynthControlPanel();
+    harmManager.drawSynthControlPanel();
+    melManager.drawSynthControlPanel();
     ParameterGUI::drawParameterMIDI(&parameterMIDI);
     imguiEndFrame();
 
@@ -304,18 +490,30 @@ public:
 
     if (timeSinceLastHarm >= triggerInterval)
     {
-      genHarmOff();
-      genHarmOn();
+      genHarmOff();  
+      genHarmOn(); 
+      updateMelody();
       timeSinceLastHarm = 0;
-      std::cout << "Generated Harmonic in if" << std::endl;
+      //std::cout << "Generated Harmonic in if" << std::endl;
     }
+
+    melodyTimeAccum += dt;
+    if (!currentMelody.empty() && melodyTimeAccum >= melodyNoteDuration) {
+        MelodyOff(); // always turn off the previous one
+        currentMelodyIndex = (currentMelodyIndex + 1) % currentMelody.size();
+        MelodyOn(); // play the next one
+        melodyTimeAccum = 0.0f;
+        std::cout <<"Current Melody Note: " << currentMelody[currentMelodyIndex] << std::endl;
+    }
+
 
   }
 
   void onDraw(Graphics &g) override
   {
     g.clear();
-    synthManager.render(g);
+    harmManager.render(g);
+    melManager.render(g);
     // // Draw Spectrum
     mSpectrogram.reset();
     mSpectrogram.primitive(Mesh::LINE_STRIP);
@@ -349,15 +547,21 @@ public:
       int midiNote = m.noteNumber();
       if (midiNote > 0 && m.velocity() > 0.001)
       {
-        synthManager.voice()->setInternalParameterValue(
+        harmManager.voice()->setInternalParameterValue(
             "frequency", ::pow(2.f, (midiNote - 69.f) / 12.f) * 432.f);
-        synthManager.voice()->setInternalParameterValue(
+        melManager.voice()->setInternalParameterValue(
+            "frequency", ::pow(2.f, (midiNote - 69.f) / 12.f) * 432.f);
+        harmManager.voice()->setInternalParameterValue(
             "attackTime", 0.01 / m.velocity());
-        synthManager.triggerOn(midiNote);
+        melManager.voice()->setInternalParameterValue(
+            "attackTime", 0.01 / m.velocity());
+        harmManager.triggerOn(midiNote);
+        melManager.triggerOn(midiNote);
       }
       else
       {
-        synthManager.triggerOff(midiNote);
+        harmManager.triggerOff(midiNote);
+        melManager.triggerOff(midiNote);
       }
       break;
     }
@@ -365,7 +569,8 @@ public:
     {
       int midiNote = m.noteNumber();
       printf("Note OFF %u, Vel %f", m.noteNumber(), m.velocity());
-      synthManager.triggerOff(midiNote);
+      harmManager.triggerOff(midiNote);
+      melManager.triggerOff(midiNote);
       break;
     }
     default:;
@@ -384,7 +589,8 @@ public:
       {
         // If shift pressed then keyboard sets preset
         int presetNumber = asciiToIndex(k.key());
-        synthManager.recallPreset(presetNumber);
+        harmManager.recallPreset(presetNumber);
+        melManager.recallPreset(presetNumber);
       }
       else
       {
@@ -392,9 +598,12 @@ public:
         int midiNote = asciiToMIDI(k.key());
         if (midiNote > 0)
         {
-          synthManager.voice()->setInternalParameterValue(
+          harmManager.voice()->setInternalParameterValue(
               "frequency", ::pow(2.f, (midiNote - 69.f) / 12.f) * 432.f);
-          synthManager.triggerOn(midiNote);
+          melManager.voice()->setInternalParameterValue(
+              "frequency", ::pow(2.f, (midiNote - 69.f) / 12.f) * 432.f);
+          harmManager.triggerOn(midiNote);
+          melManager.triggerOn(midiNote);
         }
       }
     }
@@ -424,11 +633,14 @@ public:
     int midiNote = asciiToMIDI(k.key());
     if (midiNote > 0)
     {
-      synthManager.triggerOff(midiNote);
+      harmManager.triggerOff(midiNote);
+      melManager.triggerOff(midiNote);
     }
     std::cout << "Note OFF: " << midiNote << std::endl;
     return true;
   }
+
+
 
   void genHarmOn() {
     auto chordNotes = noteDecision.getNextHarmonyChord();
@@ -445,7 +657,7 @@ public:
         float sustain = rnd::uniform(0.4f, 1.0f);
         float pan = rnd::uniformS(); // stereo position: -1.0 (left) to 1.0 (right)
 
-        Harm *voice = synthManager.voice();
+        Harm *voice = harmManager.voice();
         if (!voice) continue;
 
         //Not 100%sure if these are updating for each note or for each set. 
@@ -456,59 +668,77 @@ public:
         voice->setInternalParameterValue("sustain", sustain);
         voice->setInternalParameterValue("pan", pan);
 
-        synthManager.triggerOn(midiNote);
+        harmManager.triggerOn(midiNote);
 
         if (i == 0) harmNote1 = midiNote;
         if (i == 1) harmNote2 = midiNote;
 
-        std::cout << "Note " << i << ": " << midiNote
-                  << " freq=" << freq
-                  << " amp=" << amp
-                  << " atk=" << attack
-                  << " rel=" << release
-                  << " sus=" << sustain
-                  << " pan=" << pan << std::endl;
+        // std::cout << "Note " << i << ": " << midiNote
+        //           << " freq=" << freq
+        //           << " amp=" << amp
+        //           << " atk=" << attack
+        //           << " rel=" << release
+        //           << " sus=" << sustain
+        //           << " pan=" << pan << std::endl;
     }
   }
 
-
-  // void genHarmOn()
-  // {
-    
-  //   auto harmony = noteDecision.getNextHarmonyChord();
-  //   std::cout << "Harmony: " << harmony[0] << " " << harmony[1] << std::endl;
-    
-  //   harmNote1 = rnd::uniform(60, 72); // C3 to C5
-  //   float freq = ::pow(2.f, (harmNote1 - 69.f) / 12.f) * 432.f; // You can also use 440.f
-    
-  //   Harm *voice1 = synthManager.voice(); 
-  //   voice1->setInternalParameterValue("frequency", freq);
-  //   voice1->setInternalParameterValue("amplitude", 0.1);
-  //   voice1->setInternalParameterValue("attackTime", 0.1);
-  //   voice1->setInternalParameterValue("releaseTime", 0.1);
-  //   voice1->setInternalParameterValue("sustain", 0);
-  //   voice1->setInternalParameterValue("pan", rnd::uniformS());
-  //   synthManager.triggerOn(harmNote1);
-
-  //   harmNote2 = rnd::uniform(24, 36);
-  //   float freq2 = ::pow(2.f, (harmNote2 - 69.f) / 12.f) * 432.f; // You can also use 440.f
-
-  //   Harm *voice2 = synthManager.voice(); 
-  //   voice2->setInternalParameterValue("frequency", freq2);
-  //   voice2->setInternalParameterValue("amplitude", 0.1);
-  //   voice2->setInternalParameterValue("attackTime", 0.1);
-  //   voice2->setInternalParameterValue("releaseTime", 0.1);
-  //   voice2->setInternalParameterValue("sustain", 1);
-  //   voice2->setInternalParameterValue("pan", rnd::uniformS());
-  //   synthManager.triggerOn(harmNote2);
-    
-  // }
-
   void genHarmOff()
   {
-    synthManager.triggerOff(harmNote1);
-    synthManager.triggerOff(harmNote2);
+    harmManager.triggerOff(harmNote1);
+    harmManager.triggerOff(harmNote2);
   }
+
+  void MelodyOn() {
+      if (currentMelody.empty()) return;
+
+      if (currentMelodyIndex >= currentMelody.size()) {
+          currentMelodyIndex = 0; // wrap safely
+      }
+
+      int midiNote = currentMelody[currentMelodyIndex];
+      currentMelNote = midiNote;
+
+      float freq = pow(2.f, (midiNote - 69.f) / 12.f) * 432.f;
+
+      Melody *voice = melManager.voice();
+      if (!voice) return;
+
+      voice->setInternalParameterValue("frequency", freq);
+      voice->setInternalParameterValue("amplitude", rnd::uniform(0.1f, 0.4f));
+      voice->setInternalParameterValue("attackTime", 0.05f);
+      voice->setInternalParameterValue("releaseTime", 0.4f);
+      voice->setInternalParameterValue("sustain", 0.7f);
+      voice->setInternalParameterValue("pan", rnd::uniformS());
+
+      melManager.triggerOn(midiNote);
+  }
+
+
+  void MelodyOff() {
+      if (currentMelNote >= 0) {
+          melManager.triggerOff(currentMelNote);
+          currentMelNote = -1;
+      }
+  }
+
+
+
+  void updateMelody(){
+    if (noteDecision.currentChordIndex < 0 || 
+        noteDecision.currentChordIndex >= noteDecision.chordNames.size()) {
+        std::cerr << "Invalid currentChordIndex: " << noteDecision.currentChordIndex << std::endl;
+        return;
+    }
+
+    std::string currentChord = noteDecision.chordNames[noteDecision.currentChordIndex];
+    currentMelody = noteDecision.generateLSystemMelody(currentChord);
+    currentMelodyIndex = 0;
+    melodyTimeAccum = 0.0f;
+    currentMelNote = -1;
+  }
+
+
 
   void onExit() override { imguiShutdown(); }
   
