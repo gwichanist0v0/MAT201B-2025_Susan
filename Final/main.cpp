@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <set>
+
 #include "Gamma/Analysis.h"
 #include "Gamma/Effects.h"
 #include "Gamma/Envelope.h"
@@ -21,6 +22,9 @@
 #include "al/io/al_MIDI.hpp"
 #include "al/math/al_Random.hpp"
 #include "al_ext/assets3d/al_Asset.hpp"
+#include "al/sound/al_SoundFile.hpp"
+#include "al/graphics/al_Image.hpp"
+#include "al/io/al_File.hpp"
 
 
 using namespace al;
@@ -165,11 +169,6 @@ class NoteDecision
 
     return finalMelody;
   }
-
-
-
-
-
 
 };
 
@@ -359,7 +358,7 @@ public:
     g.translate(timepose, getInternalParameterValue("frequency") / 200 - 3, -4);
     g.rotate(rotateA, Vec3f(0, 1, 0));
     g.rotate(rotateB, Vec3f(1));
-    float scaling = getInternalParameterValue("amplitude") / 10;
+    float scaling = getInternalParameterValue("amplitude") / 10000;
     g.scale(scaling + getInternalParameterValue("amplitude") , scaling + getInternalParameterValue("attackTime"), scaling + mEnvFollow.value() * 5);
     g.color(HSV(getInternalParameterValue("amplitude") * 20, getInternalParameterValue("releaseTime") * 20, 0.5 + getInternalParameterValue("pan")));
     g.draw(melObj[0]);
@@ -393,12 +392,112 @@ public:
 
 };
 
+class Ambience {
+public:
+  SoundFilePlayerTS playerTS;
+  std::vector<float> buffer;
+  bool loop = true;
+
+  void init(const std::string &filepath) {
+    if (!playerTS.open(filepath.c_str())) {
+      std::cerr << "File not found: " << filepath << std::endl;
+      return;
+    }
+
+    playerTS.setLoop();
+    playerTS.setPlay();
+  }
+
+  void render(AudioIOData &io) {
+    int frames = (int)io.framesPerBuffer();
+    int channels = playerTS.soundFile.channels;
+    int bufferLength = frames * channels;
+
+    if ((int)buffer.size() < bufferLength) {
+      buffer.resize(bufferLength);
+    }
+
+    playerTS.getFrames(frames, buffer.data(), bufferLength);
+
+    int second = (channels < 2) ? 0 : 1;
+    while (io()) {
+      int frame = (int)io.frame();
+      int idx = frame * channels;
+      io.out(0) += buffer[idx];
+      io.out(1) += buffer[idx + second];
+    }
+
+    //std::cout << "Ambience playing" << std::endl;
+  }
+};
+
+class Emitter {
+public:
+  std::vector<std::string> filepaths;
+  SoundFilePlayerTS playerTS;
+  std::vector<float> buffer;
+  float timer = 0.0f;
+  float interval = 5.0f; // seconds
+
+  void init(const std::vector<std::string>& paths) {
+    filepaths = paths;
+    buffer.resize(4096); // or something safely large
+  }
+
+  void update(float dt) {
+    timer += dt;
+    if (timer >= interval) {
+      playRandomFile();
+      timer = 0.0f;
+    }
+  }
+
+  void playRandomFile() {
+    int index = rnd::uniform<int>(0, filepaths.size() - 1);
+    if (playerTS.open(filepaths[index].c_str())) {
+      playerTS.setNoLoop();
+      playerTS.setPlay();
+    } else {
+      std::cerr << "Could not open file: " << filepaths[index] << std::endl;
+    }
+  }
+
+  void render(AudioIOData& io) {
+    int frames = (int)io.framesPerBuffer();
+    int channels = playerTS.soundFile.channels;
+    int bufferLength = frames * channels;
+    if ((int)buffer.size() < bufferLength) {
+      buffer.resize(bufferLength);
+    }
+
+    playerTS.getFrames(frames, buffer.data(), bufferLength);
+    int second = (channels < 2) ? 0 : 1;
+
+    while (io()) {
+      int frame = (int)io.frame();
+      int idx = frame * channels;
+      io.out(0) += buffer[idx];
+      io.out(1) += buffer[idx + second];
+    }
+
+    //std::cout << "Emitter playing" << std::endl;
+  }
+};
+
+
+
+
+
 
 class MyApp : public App, public MIDIMessageHandler
 {
 public:
   SynthGUIManager<Harm> harmManager{"Harm"};
-  SynthGUIManager<Melody> melManager{"Melody"}; 
+  SynthGUIManager<Melody> melManager{"Melody"};
+
+  Ambience amb;
+  Emitter emitter;
+
   RtMidiIn midiIn; // MIDI input carrier
   ParameterMIDI parameterMIDI;
   int midiNote;
@@ -427,6 +526,9 @@ public:
   float melodyNoteDuration = 1.0f; 
   int currentMelNote = -1;
 
+  //Skybox 
+  Mesh mskyBox;
+  Texture skyboxTexture;
 
   void onInit() override
   {
@@ -436,6 +538,19 @@ public:
                                 // will be using keyboard for note triggering
     // Set sampling rate for Gamma objects from app's audio
     gam::sampleRate(audioIO().framesPerSecond());
+
+    amb.init("../amb.wav");
+
+    //emitter.init("../a.wav");
+
+    emitter.init({
+    "../a.wav",
+    "../b.wav",
+    "../c.wav"
+    });
+
+    
+
     // Check for connected MIDI devices
     if (midiIn.getPortCount() > 0)
     {
@@ -465,17 +580,35 @@ public:
     harmManager.synthRecorder().verbose(true);
     melManager.synthRecorder().verbose(true);
     nav().pos(3, 0, 17);
+
+    //Skybox related
+    addSphereWithTexcoords(mskyBox, 1.0, 160, true);
+    auto file = File::currentPath() + "../skybox.jpg";
+    auto image = Image(file);
+    skyboxTexture.create2D(image.width(), image.height());
+    skyboxTexture.submit(image.array().data(), GL_RGBA, GL_UNSIGNED_BYTE);
+    skyboxTexture.filter(Texture::LINEAR);
+
+
   }
 
   void onSound(AudioIOData &io) override
   {
     harmManager.render(io); // Render audio
     melManager.render(io);
+    
+    amb.render(io);
+    emitter.render(io);
+    //amb.render(io);
+   
+
     // STFT
     while (io())
     {
       io.out(0) = tanh(io.out(0));
       io.out(1) = tanh(io.out(1));
+      //io.out(2) = tanh(io.out(2));
+      
       if (stft(io.out(0)))
       { // Loop through all the frequency bins
         for (unsigned k = 0; k < stft.numBins(); ++k)
@@ -486,6 +619,8 @@ public:
         }
       }
     }
+
+
   }
 
   void onAnimate(double dt) override
@@ -520,6 +655,8 @@ public:
         std::cout <<"Current Melody Note: " << currentMelody[currentMelodyIndex] << std::endl;
     }
 
+    emitter.update(dt);
+
 
   }
 
@@ -550,6 +687,12 @@ public:
     {
       imguiDraw();
     }
+
+    //Skybox
+    g.depthTesting(true);
+    skyboxTexture.bind();
+    g.texture();
+    g.draw(mskyBox);
   }
 
   void onMIDIMessage(const MIDIMessage &m)
@@ -751,6 +894,10 @@ public:
     melodyTimeAccum = 0.0f;
     currentMelNote = -1;
   }
+
+
+
+
 
 
 
