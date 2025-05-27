@@ -588,6 +588,8 @@ public:
   float springConstant = 0.01;
   float sphereRadius = 5.0;
 
+  float sColor = 0.0f;
+
   Ambience* amb = nullptr;  // shared, not owned
 
   void setAmbience(Ambience* a) {
@@ -597,12 +599,12 @@ public:
   void init(){
 
     
-    auto randomColor = []() { return HSV(rnd::uniform(), 1.0f, 1.0f); };
+    auto colour = HSV(0.5, sColor, 1); 
     pointSize = rnd::uniform(1.0, 2.0);
     for (int _ = 0; _ < 1000; _++) {
       Vec3f pos = randomVec3f(5);
       mParticles.vertex(pos);
-      mParticles.color(randomColor());
+      mParticles.color(colour);
 
       float m = 3 + rnd::normal() / 2;
       if (m < 0.5) m = 0.5;
@@ -628,8 +630,16 @@ public:
 
 
     springConstant = static_cast<float>(ambAmp * 100.0);
-    std::cout << "Spring Constant: " << springConstant << std::endl;
-    std::cout << "Ambience Amplitude IN LOOP: " << ambAmp << std::endl;
+    // std::cout << "Spring Constant: " << springConstant << std::endl;
+    // std::cout << "Ambience Amplitude IN LOOP: " << ambAmp << std::endl;
+
+    sColor = ambAmp * 50.0; 
+    auto& colors = mParticles.colors();
+    for (auto& c : colors) {
+        c = HSV(sColor*2, sColor, 1.0);
+    }
+    std::cout << "sColor: " << sColor << std::endl;
+
 
     // Spring force towards center
     for (int i = 0; i < position.size(); i++) {
