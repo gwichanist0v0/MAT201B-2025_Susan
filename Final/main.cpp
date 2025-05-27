@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <set>
+#include <fstream>
 
 #include "Gamma/Analysis.h"
 #include "Gamma/Effects.h"
@@ -12,6 +13,9 @@
 #include "Gamma/Oscillator.h"
 #include "Gamma/Types.h"
 #include "Gamma/DFT.h"
+#include "Gamma/Delay.h"
+#include "Gamma/Filter.h"
+#include "Gamma/SamplePlayer.h"
 
 #include "al/app/al_App.hpp"
 #include "al/graphics/al_Shapes.hpp"
@@ -32,6 +36,12 @@ using namespace std;
 #define FFT_SIZE 4048
 
 //Self reminders: Needs to initialize a chord & melody 
+
+Vec3f randomVec3f(float scale) {
+  return Vec3f(rnd::uniformS(), rnd::uniformS(), rnd::uniformS()) * scale;
+}
+
+string slurp(string fileName);  // forward declaration
 
 class NoteDecision 
 {
@@ -281,11 +291,25 @@ class Melody : public SynthVoice
 {
 public:
 // Unit generators
+  float mAmp;
+  float mDur;
+  float mPanRise;
   gam::Pan<> mPan;
-  gam::Saw<> mOsc;
+  gam::NoiseWhite<> noise;
+  gam::Decay<> env;
+  gam::MovingAvg<> fil{2};
+  gam::Delay<float, gam::ipl::Trunc> delay;
   gam::ADSR<> mAmpEnv;
-  // envelope follower to connect audio output to graphics
   gam::EnvFollow<> mEnvFollow;
+  gam::Env<2> mPanEnv;
+  gam::STFT stft = gam::STFT(FFT_SIZE, FFT_SIZE / 4, 0, gam::HANN, gam::MAG_FREQ);
+
+
+  //Echo
+  gam::Delay<> delayEcho;
+  gam::OnePole<> lpf;
+
+
   // Draw parameters
   Mesh mMel;
   vector<Mesh> melObj;
@@ -293,15 +317,34 @@ public:
   double rotateB;
   double spin = al::rnd::uniformS();
   double timepose = 0;
+  vector<float> spectrum;
+
   Vec3f note_position;
   Vec3f note_direction;
   Scene *melscene{nullptr};
 
-  void init() override
+  virtual void init() override
   {
-    mAmpEnv.curve(0); // linear segments
+    spectrum.resize(FFT_SIZE / 2 + 1);
     mAmpEnv.levels(0, 1, 1, 0);
-    mAmpEnv.sustainPoint(2);
+    mPanEnv.curve(4);
+    env.decay(0.1);
+    delay.maxDelay(1. / 27.5);
+    delay.delay(1. / 440.0);
+
+    delayEcho.maxDelay(0.3);
+    lpf.type(gam::LOW_PASS);
+    lpf.freq(2000);
+    
+
+    createInternalTriggerParameter("amplitude", 0.1, 0.0, 1.0);
+    createInternalTriggerParameter("frequency", 60, 20, 5000);
+    createInternalTriggerParameter("attackTime", 0.001, 0.001, 1.0);
+    createInternalTriggerParameter("releaseTime", 3.0, 0.1, 10.0);
+    createInternalTriggerParameter("sustain", 0.7, 0.0, 1.0);
+    createInternalTriggerParameter("Pan1", 0.0, -1.0, 1.0);
+    createInternalTriggerParameter("Pan2", 0.0, -1.0, 1.0);
+    createInternalTriggerParameter("PanRise", 0.0, 0, 3.0); // range check
  
     //Graphics
     std::string melFile = "../cloud_poly.obj"; 
@@ -314,40 +357,51 @@ public:
     for (int i = 0; i < melscene->meshes(); i += 1) {
       melscene->mesh(i, melObj[i]);
     }
-    //addCube(mMel);
-    //mMel.decompress();
-    //mMel.generateNormals();
-
-    // Create parameters
-    createInternalTriggerParameter("frequency", 440, 10, 4000.0);
-    createInternalTriggerParameter("amplitude", 0.05, 0.0, 1.0);
-    createInternalTriggerParameter("attackTime", 0.1, 0.01, 3.0);
-    createInternalTriggerParameter("releaseTime", 0.5, 0.1, 10.0);
-    createInternalTriggerParameter("sustain", 0.65, 0.1, 1.0);
-    createInternalTriggerParameter("pan", 0.0, -1.0, 1.0);
+   
 
   }
 
-  void onProcess(AudioIOData &io) override
+  float operator()()
   {
-    //Get Parameters
-    mOsc.freq(getInternalParameterValue("frequency"));
-    mPan.pos(getInternalParameterValue("pan"));
-    float amp = getInternalParameterValue("amplitude");
+      return (*this)(noise() * env());
+  }
+  float operator()(float in)
+  {
+      return delay(
+          fil(delay() + in));
+  }
+
+  virtual void onProcess(AudioIOData &io) override
+  {
+
     while (io())
     {
-      float s1 = mOsc() * mAmpEnv() * amp;
+      mPan.pos(mPanEnv());
+      float s1 = (*this)() * mAmpEnv() * mAmp;
       float s2;
+      float echo = delayEcho();
+      echo = lpf(echo) * 0.8;
+      delayEcho(s1 + echo);
+      s1 += echo;
       mEnvFollow(s1);
       mPan(s1, s1, s2);
       io.out(0) += s1;
       io.out(1) += s2;
+      // STFT for each notes
+      if (stft(s1))
+      { // Loop through all the frequency bins
+          for (unsigned k = 0; k < stft.numBins(); ++k)
+          {
+              // Here we simply scale the complex sample
+              spectrum[k] = tanh(pow(stft.bin(k).real(), 1.3));
+          }
+      }
     }
     if (mAmpEnv.done() && (mEnvFollow.value() < 0.001))
       free();
-  }
+    }
 
-  void onProcess(Graphics &g) override
+  virtual void onProcess(Graphics &g) override
   {
     rotateA += 0.29;
     rotateB += 0.23;
@@ -360,21 +414,22 @@ public:
     g.rotate(rotateB, Vec3f(1));
     float scaling = getInternalParameterValue("amplitude") / 10000;
     g.scale(scaling + getInternalParameterValue("amplitude") , scaling + getInternalParameterValue("attackTime"), scaling + mEnvFollow.value() * 5);
-    g.color(HSV(getInternalParameterValue("amplitude") * 20, getInternalParameterValue("releaseTime") * 20, 0.5 + getInternalParameterValue("pan")));
+    g.color(HSV(getInternalParameterValue("amplitude") * 20, getInternalParameterValue("releaseTime") * 20, 0.5 + getInternalParameterValue("Pan1")));
     g.draw(melObj[0]);
     g.popMatrix();
   }
 
-   void onTriggerOn() override
-  {
-    timepose = 10;
+  virtual void onTriggerOn() override {
     mAmpEnv.reset();
-
-    updateFromParameters();
-    
+    timepose = 10;
+    env.reset();
+    delay.zero();
+    mPanEnv.reset();
+    updateFromParameters(); // move this earlier!
   }
 
-  void onTriggerOff() override
+
+  virtual void onTriggerOff() override
   {
     mAmpEnv.triggerRelease();
   }
@@ -382,11 +437,18 @@ public:
   void updateFromParameters()
   {
 
-    mAmpEnv.attack(getInternalParameterValue("attackTime"));
-    mAmpEnv.release(getInternalParameterValue("releaseTime"));
-    mAmpEnv.sustain(getInternalParameterValue("sustain"));
-    
-    mPan.pos(getInternalParameterValue("pan"));
+    mPanEnv.levels(getInternalParameterValue("Pan1"),
+                   getInternalParameterValue("Pan2"),
+                   getInternalParameterValue("Pan1"));
+    mPanRise = getInternalParameterValue("PanRise");
+    delay.freq(getInternalParameterValue("frequency"));
+    mAmp = getInternalParameterValue("amplitude");
+    mAmpEnv.levels()[1] = 1.0;
+    mAmpEnv.levels()[2] = getInternalParameterValue("sustain");
+    mAmpEnv.lengths()[0] = getInternalParameterValue("attackTime");
+    mAmpEnv.lengths()[3] = getInternalParameterValue("releaseTime");
+    mPanEnv.lengths()[0] = mPanRise;
+    mPanEnv.lengths()[1] = mPanRise;
   }
 
 
@@ -395,15 +457,17 @@ public:
 class Ambience {
 public:
   SoundFilePlayerTS playerTS;
-  std::vector<float> buffer;
+  std::vector<float> bufferAmb;
   bool loop = true;
+  float amp = 0.0f; 
+  int frames = 0;
+  float sumSquares = 0.0f;
 
   void init(const std::string &filepath) {
     if (!playerTS.open(filepath.c_str())) {
       std::cerr << "File not found: " << filepath << std::endl;
       return;
     }
-
     playerTS.setLoop();
     playerTS.setPlay();
   }
@@ -413,35 +477,55 @@ public:
     int channels = playerTS.soundFile.channels;
     int bufferLength = frames * channels;
 
-    if ((int)buffer.size() < bufferLength) {
-      buffer.resize(bufferLength);
+    
+
+    if ((int)bufferAmb.size() < bufferLength) {
+      bufferAmb.resize(bufferLength);
     }
 
-    playerTS.getFrames(frames, buffer.data(), bufferLength);
+    playerTS.getFrames(frames, bufferAmb.data(), bufferLength);
+
+    float sumSquares = 0.0f; // for RMS amplitude
+
 
     int second = (channels < 2) ? 0 : 1;
     while (io()) {
-      int frame = (int)io.frame();
-      int idx = frame * channels;
-      io.out(0) += buffer[idx];
-      io.out(1) += buffer[idx + second];
-    }
+      frames = (int)io.frame();
+      int idx = frames * channels;
 
+      float sL = bufferAmb[idx];
+      float sR = bufferAmb[idx + second];
+
+      io.out(0) += sL;
+      io.out(1) += sR;
+
+      sumSquares += 0.5f * (sL * sL + sR * sR);  // accumulate stereo energy
+    }
+    //std::cout << "Ambience RMS Amplitude: " << amp << std::endl;
+    amp = std::sqrt(sumSquares / frames);  // RMS amplitud
     //std::cout << "Ambience playing" << std::endl;
   }
+
+  float getAmp(){
+    
+    return amp;
+  }
+
 };
+
+
 
 class Emitter {
 public:
   std::vector<std::string> filepaths;
   SoundFilePlayerTS playerTS;
-  std::vector<float> buffer;
+  std::vector<float> bufferEmit;
   float timer = 0.0f;
-  float interval = 5.0f; // seconds
+  float interval = 10.0f; // seconds
 
   void init(const std::vector<std::string>& paths) {
     filepaths = paths;
-    buffer.resize(4096); // or something safely large
+    bufferEmit.resize(4096); // or something safely large
   }
 
   void update(float dt) {
@@ -449,6 +533,7 @@ public:
     if (timer >= interval) {
       playRandomFile();
       timer = 0.0f;
+      std::cout << "Emitter ISplaying" << std::endl;
     }
   }
 
@@ -466,26 +551,127 @@ public:
     int frames = (int)io.framesPerBuffer();
     int channels = playerTS.soundFile.channels;
     int bufferLength = frames * channels;
-    if ((int)buffer.size() < bufferLength) {
-      buffer.resize(bufferLength);
+    if ((int)bufferEmit.size() < bufferLength) {
+      bufferEmit.resize(bufferLength);
     }
 
-    playerTS.getFrames(frames, buffer.data(), bufferLength);
+    playerTS.getFrames(frames, bufferEmit.data(), bufferLength);
     int second = (channels < 2) ? 0 : 1;
 
     while (io()) {
       int frame = (int)io.frame();
       int idx = frame * channels;
-      io.out(0) += buffer[idx];
-      io.out(1) += buffer[idx + second];
+      io.out(0) += bufferEmit[idx];
+      io.out(1) += bufferEmit[idx + second];
     }
 
     //std::cout << "Emitter playing" << std::endl;
   }
 };
 
+class Particles{
+public:
+
+  ShaderProgram pointShader;
+
+  Mesh mParticles;  // particle positions
+  vector<Vec3f> velocity;
+  vector<Vec3f> force;
+  vector<float> mass;
+  Vec3f loveTarget;
+  int mousex, mousey;
+  int windHeight, windWidth;
+
+  float pointSize = 1.0;
+  float timeStep = 0.1;
+  float dragFactor = 0.1;
+  float springConstant = 0.01;
+  float sphereRadius = 5.0;
+
+  Ambience* amb = nullptr;  // shared, not owned
+
+  void setAmbience(Ambience* a) {
+    amb = a;
+  }
+
+  void init(){
+
+    
+    auto randomColor = []() { return HSV(rnd::uniform(), 1.0f, 1.0f); };
+    pointSize = rnd::uniform(1.0, 2.0);
+    for (int _ = 0; _ < 1000; _++) {
+      Vec3f pos = randomVec3f(5);
+      mParticles.vertex(pos);
+      mParticles.color(randomColor());
+
+      float m = 3 + rnd::normal() / 2;
+      if (m < 0.5) m = 0.5;
+      mass.push_back(m);
+      mParticles.texCoord(pow(m, 1.0f / 3), 0); // visual size approx radius
+
+      velocity.push_back(randomVec3f(0.1));
+      force.push_back(Vec3f(0));
+    }
+  }
+
+  void create() {
+    pointShader.compile(slurp("../point-vertex.glsl"),
+                        slurp("../point-fragment.glsl"),
+                        slurp("../point-geometry.glsl"));
+    mParticles.primitive(Mesh::POINTS);
+  }
+
+  void update(float dt) {
+    vector<Vec3f> &position = mParticles.vertices();
+
+    float ambAmp = amb ? amb->getAmp() : 0.0f;
 
 
+    springConstant = static_cast<float>(ambAmp * 100.0);
+    std::cout << "Spring Constant: " << springConstant << std::endl;
+    std::cout << "Ambience Amplitude IN LOOP: " << ambAmp << std::endl;
+
+    // Spring force towards center
+    for (int i = 0; i < position.size(); i++) {
+      Vec3f dir = position[i].normalize(sphereRadius) - position[i];
+      force[i] += dir * springConstant;
+    }
+
+    // Particle-particle repulsion
+    for (int i = 0; i < position.size(); i++) {
+      for (int j = i + 1; j < position.size(); j++) {
+        Vec3f diff = position[j] - position[i];
+        float dist = diff.mag();
+        float ri = pow(mass[i], 1.0f / 3);
+        float rj = pow(mass[j], 1.0f / 3);
+        float minDist = ri + rj;
+
+        if (dist < minDist && dist > 0.0001f) {
+          Vec3f norm = diff.normalized();
+          float overlap = minDist - dist;
+          force[i] -= norm * overlap * springConstant;
+          force[j] += norm * overlap * springConstant;
+        }
+      }
+    }
+
+    // Integrate
+    for (int i = 0; i < position.size(); i++) {
+      velocity[i] += force[i] / mass[i] * timeStep;
+      velocity[i] *= (1.0f - dragFactor);
+      position[i] += velocity[i] * timeStep;
+      force[i].set(0);
+
+      // Bounce against walls
+      for (int d = 0; d < 3; d++) {
+        if (fabs(position[i][d]) > sphereRadius) {
+          position[i][d] = copysign(sphereRadius, position[i][d]);
+          velocity[i][d] *= -1.0f;
+        }
+      }
+    }
+  }
+};
 
 
 
@@ -497,6 +683,7 @@ public:
 
   Ambience amb;
   Emitter emitter;
+  Particles particles;
 
   RtMidiIn midiIn; // MIDI input carrier
   ParameterMIDI parameterMIDI;
@@ -539,14 +726,31 @@ public:
     // Set sampling rate for Gamma objects from app's audio
     gam::sampleRate(audioIO().framesPerSecond());
 
-    amb.init("../amb.wav");
+    particles.init();
+    particles.create();
+    particles.setAmbience(&amb); // pass pointer to MyApp's amb
+
+
+    amb.init("../sounds/amb.wav");
 
     //emitter.init("../a.wav");
 
     emitter.init({
-    "../a.wav",
-    "../b.wav",
-    "../c.wav"
+    "../sounds/emitter_1.wav",
+    "../sounds/emitter_2.wav",
+    "../sounds/emitter_3.wav",
+    "../sounds/emitter_4.wav",
+    "../sounds/emitter_5.wav",
+    "../sounds/emitter_6.wav",
+    "../sounds/emitter_7.wav",
+    "../sounds/emitter_8.wav",
+    "../sounds/emitter_9.wav",
+    "../sounds/emitter_10.wav",
+    "../sounds/emitter_11.wav",
+    "../sounds/emitter_12.wav",
+    "../sounds/emitter_13.wav",
+    "../sounds/emitter_14.wav",
+    "../sounds/emitter_15.wav",
     });
 
     
@@ -657,6 +861,9 @@ public:
 
     emitter.update(dt);
 
+    particles.update((float)dt);
+
+
 
   }
 
@@ -693,6 +900,15 @@ public:
     skyboxTexture.bind();
     g.texture();
     g.draw(mskyBox);
+
+
+    //Particles
+    g.shader(particles.pointShader);
+    g.shader().uniform("pointSize", particles.pointSize / 100);
+    g.blending(true);
+    g.blendTrans();
+    g.depthTesting(true);
+    g.draw(particles.mParticles);
   }
 
   void onMIDIMessage(const MIDIMessage &m)
@@ -896,11 +1112,6 @@ public:
   }
 
 
-
-
-
-
-
   void onExit() override { imguiShutdown(); }
   
 
@@ -917,4 +1128,15 @@ int main()
   app.configureAudio(48000., 512, 2, 0);
   app.start();
   return 0;
+}
+
+string slurp(string fileName) {
+  fstream file(fileName);
+  string returnValue = "";
+  while (file.good()) {
+    string line;
+    getline(file, line);
+    returnValue += line + "\n";
+  }
+  return returnValue;
 }
