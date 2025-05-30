@@ -30,11 +30,16 @@
 #include "al/graphics/al_Image.hpp"
 #include "al/io/al_File.hpp"
 
+#include "al/app/al_DistributedApp.hpp"
+#include "al_ext/statedistribution/al_CuttleboneDomain.hpp"
+#include "al_ext/statedistribution/al_CuttleboneStateSimulationDomain.hpp"
+
 
 using namespace al;
 using namespace std;
-#define FFT_SIZE 4048
+#define FFT_SIZE (4096)
 
+//In the bin there's the distributed version of the scene 
 //Self reminders: Needs to initialize a chord & melody 
 
 Vec3f randomVec3f(float scale) {
@@ -569,6 +574,9 @@ public:
   }
 };
 
+#define NPART 1000
+
+
 class Particles{
 public:
 
@@ -601,7 +609,7 @@ public:
     
     auto colour = HSV(0.5, sColor, 1); 
     pointSize = rnd::uniform(1.0, 2.0);
-    for (int _ = 0; _ < 1000; _++) {
+    for (int _ = 0; _ < NPART; _++) {
       Vec3f pos = randomVec3f(5);
       mParticles.vertex(pos);
       mParticles.color(colour);
@@ -638,7 +646,7 @@ public:
     for (auto& c : colors) {
         c = HSV(sColor*2, sColor, 1.0);
     }
-    std::cout << "sColor: " << sColor << std::endl;
+    //std::cout << "sColor: " << sColor << std::endl;
 
 
     // Spring force towards center
@@ -683,9 +691,21 @@ public:
   }
 };
 
+struct Common{
+
+  //Stuff that only runs on the primary: GUI, Audio
+  float spectrum[FFT_SIZE / 2 + 1];
+  Vec3f position[NPART];
+  Pose nav; 
+
+  //Needs to send particle location and colour over to the common state 
 
 
-class MyApp : public App, public MIDIMessageHandler
+}; 
+
+
+class MyApp : public DistributedAppWithState<Common>, public MIDIMessageHandler
+//class MyApp : public App, public MIDIMessageHandler
 {
 public:
   SynthGUIManager<Harm> harmManager{"Harm"};
@@ -704,7 +724,7 @@ public:
   vector<float> spectrum;
   bool showGUI = true;
   bool showSpectro = true;
-  bool navi = false;
+  bool navi = true;
   gam::STFT stft = gam::STFT(FFT_SIZE, FFT_SIZE / 4, 0, gam::HANN, gam::MAG_FREQ);
 
   //Harmony related
@@ -729,6 +749,19 @@ public:
 
   void onInit() override
   {
+
+    auto cuttleboneDomain =
+        CuttleboneStateSimulationDomain<Common>::enableCuttlebone(this);
+    if (!cuttleboneDomain) {
+      std::cerr << "ERROR: Could not start Cuttlebone. Quitting." << std::endl;
+      quit();
+    }
+
+    if (!isPrimary()) {
+      return;
+    }
+
+    
     imguiInit();
 
     navControl().active(false); // Disable navigation via keyboard, since we
@@ -737,7 +770,6 @@ public:
     gam::sampleRate(audioIO().framesPerSecond());
 
     particles.init();
-    particles.create();
     particles.setAmbience(&amb); // pass pointer to MyApp's amb
 
 
@@ -786,17 +818,21 @@ public:
     // Declare the size of the spectrum
     spectrum.resize(FFT_SIZE / 2 + 1);
 
+    harmManager.synthRecorder().verbose(true);
+    melManager.synthRecorder().verbose(true);
+
 
   }
 
   void onCreate() override
   {
-    harmManager.synthRecorder().verbose(true);
-    melManager.synthRecorder().verbose(true);
     nav().pos(3, 0, 17);
+    particles.create();
+
 
     //Skybox related
     addSphereWithTexcoords(mskyBox, 1.0, 160, true);
+    mskyBox.scale(30.0f); 
     auto file = File::currentPath() + "../skybox.jpg";
     auto image = Image(file);
     skyboxTexture.create2D(image.width(), image.height());
@@ -808,12 +844,22 @@ public:
 
   void onSound(AudioIOData &io) override
   {
+    
+    if (!isPrimary()) {
+      return;
+    }
+    
+    io.frame(0);
     harmManager.render(io); // Render audio
+
+    io.frame(0);
     melManager.render(io);
     
+    io.frame(0);
     amb.render(io);
+
+    io.frame(0);
     emitter.render(io);
-    //amb.render(io);
    
 
     // STFT
@@ -834,17 +880,25 @@ public:
       }
     }
 
+    for (int i = 0; i < FFT_SIZE / 2 + 1; i++) {
+      state().spectrum[i] = spectrum[i];
+    }
+
 
   }
 
   void onAnimate(double dt) override
   {
+    
+    if (isPrimary()) {
     navControl().active(navi); // Disable navigation via keyboard, since we
     imguiBeginFrame();
     harmManager.drawSynthControlPanel();
     melManager.drawSynthControlPanel();
     ParameterGUI::drawParameterMIDI(&parameterMIDI);
     imguiEndFrame();
+    state().nav = nav();
+    } 
 
     //For Gen harm
 
@@ -869,9 +923,22 @@ public:
         std::cout <<"Current Melody Note: " << currentMelody[currentMelodyIndex] << std::endl;
     }
 
-    emitter.update(dt);
+    //emitter.update(dt);
+
+    if (isPrimary()) {
 
     particles.update((float)dt);
+    for (int i = 0; i < NPART; i++) {
+      state().position[i] = particles.mParticles.vertices()[i];
+    }
+
+    } 
+    else {
+      for (int i = 0; i < NPART; i++) {
+        particles.mParticles.vertices().clear(); 
+        particles.mParticles.vertex(state().position[i]);
+      }
+    }
 
 
 
@@ -880,8 +947,10 @@ public:
   void onDraw(Graphics &g) override
   {
     g.clear();
+    if (isPrimary()) {
     harmManager.render(g);
     melManager.render(g);
+    } 
     // // Draw Spectrum
     mSpectrogram.reset();
     mSpectrogram.primitive(Mesh::LINE_STRIP);
@@ -889,8 +958,10 @@ public:
     {
       for (int i = 0; i < FFT_SIZE / 2; i++)
       {
-        mSpectrogram.color(HSV(0.5 - spectrum[i] * 100));
-        mSpectrogram.vertex(i, spectrum[i], 0.0);
+       
+        float f = state().spectrum[i];
+        mSpectrogram.color(HSV(0.5 - f * 100));
+        mSpectrogram.vertex(i, f, 0.0);
       }
       g.meshColor(); // Use the color in the mesh
       g.pushMatrix();
@@ -962,6 +1033,10 @@ public:
 
   bool onKeyDown(Keyboard const &k) override
   {
+    if (!isPrimary()) {
+      return true;
+    }
+    
     if (ParameterGUI::usingKeyboard())
     { // Ignore keys if GUI is using them
       return true;
