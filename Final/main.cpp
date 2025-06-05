@@ -5,6 +5,10 @@
 #include <string>
 #include <set>
 #include <fstream>
+#include <random>
+#include <ctime>
+#include <iostream>
+
 
 #include "Gamma/Analysis.h"
 #include "Gamma/Effects.h"
@@ -133,56 +137,83 @@ class NoteDecision
       return selectedNotes;
     }
 
-  std::vector<int> generateLSystemMelody(const std::string &chordName) {
-    // Terminal symbols: 5–15
-    std::map<int, std::vector<int>> rules = {
-        {0, {1, 2}},        // initial branching
-        {1, {5, 6}},        // terminal
-        {2, {3, 4}},        // leads to terminals
-        {3, {7, 8}},        // terminal
-        {4, {9, 10}},       // terminal
-        {5, {}}, {6, {}}, {7, {}}, {8, {}}, {9, {}}, {10, {}},
-        {11, {}}, {12, {}}, {13, {}}, {14, {}}, {15, {}}
-    };
 
-    std::vector<int> melody;
-    std::vector<int> tree;
+  //L-system chat prompt link: https://chatgpt.com/share/6841e6b6-e124-8009-8fc1-58f2315d995a
 
-    // Start with a safe axiom
-    tree.push_back(0);
+  std::mt19937 rng{static_cast<unsigned int>(time(nullptr))};
+  std::uniform_int_distribution<int> axiomDist{0, 15};
+  std::uniform_int_distribution<int> ruleDist{0, 5}; // 6 options
 
-    int iterations = 0;
-    const int maxIterations = 20;
+    // Apply L-system rules
+  std::string applyRules(const std::string& input) {
+      std::string result;
+      for (char c : input) {
+          if (c == 'X') {
+              result += "LR";
+          } else if (c == 'L') {
+              switch (ruleDist(rng)) {
+                  case 0: result += "LR"; break;
+                  case 1: result += "LL"; break;
+                  case 2: result += "LLL"; break;
+                  case 3: result += "R"; break;
+                  case 4: result += "RR"; break;
+                  case 5: result += "RRR"; break;
+              }
+          } else if (c == 'R') {
+              switch (ruleDist(rng)) {
+                  case 0: result += "LR"; break;
+                  case 1: result += "L"; break;
+                  case 2: result += "LL"; break;
+                  case 3: result += "LLL"; break;
+                  case 4: result += "RR"; break;
+                  case 5: result += "RRR"; break;
+              }
+          }
+      }
+      return result;
+  }
 
-    while (!tree.empty() && melody.size() < 10 && iterations < maxIterations) {
-        int current = tree.front();
-        tree.erase(tree.begin());
+  // Convert L-system string to melody with pitch wrapping 0–15
+  std::vector<int> lsystemToMelody(const std::string& symbols, int startNote) {
 
-        if (rules.find(current) != rules.end() && !rules[current].empty()) {
-            std::vector<int> expansion = rules[current];
-            std::random_shuffle(expansion.begin(), expansion.end());
-            tree.insert(tree.end(), expansion.begin(), expansion.end());
-        } else {
-            melody.push_back(current);
-        }
+      const int chordIndex = pickNextChordIndex();
+      const auto chord = chordNames[chordIndex];
+      const auto melodyNotes = melodyDictionary[chord];
 
-        iterations++;
+      std::vector<int> melody;
+
+      
+      int current = startNote;
+      for (char c : symbols) {
+          if (c == 'L') {
+              current = (current - 1 + 16) % 16;
+          } else if (c == 'R') {
+              current = (current + 1) % 16;
+          }
+          melody.push_back(melodyNotes[current]);
+      }
+      return melody;
+  }
+
+  std::vector<int> generateMelody() {
+    int axiomNote = axiomDist(rng);  // Random start pitch 0–15
+    std::string current = "X";
+    for (int i = 0; i < 3; ++i) {
+        current = applyRules(current);
     }
 
-    // Fallback
-    if (melody.empty()) {
-        melody.push_back(rnd::uniform(5, 16)); // pick a terminal
-    }
+    std::vector<int> melody = lsystemToMelody(current, axiomNote);
 
-    // Convert to melody MIDI notes from melodyDictionary
-    const std::vector<int> &scale = melodyDictionary[chordName];
-    std::vector<int> finalMelody;
-    for (int symbol : melody) {
-        int index = symbol % scale.size(); // safely wrap
-        finalMelody.push_back(scale[index]);
+    // Output results
+    std::cout << "Axiom starting pitch: " << axiomNote << std::endl;
+    std::cout << "Generated L-system string: " << current << std::endl;
+    std::cout << "Melody note sequence (0–15 wrapped): ";
+    for (int note : melody) {
+        std::cout << note << " ";
     }
+    std::cout << std::endl;
 
-    return finalMelody;
+    return melody;
   }
 
 };
@@ -909,8 +940,13 @@ public:
     {
       genHarmOff();  
       genHarmOn(); 
-      updateMelody();
       timeSinceLastHarm = 0;
+
+      currentMelody = noteDecision.generateMelody();
+      currentMelodyIndex = 0;
+      melodyTimeAccum = 0.0f;
+      currentMelNote = -1;
+      
       //std::cout << "Generated Harmonic in if" << std::endl;
     }
 
@@ -1158,6 +1194,7 @@ public:
       currentMelNote = midiNote;
 
       float freq = pow(2.f, (midiNote - 69.f) / 12.f) * 432.f;
+      std::cout << "Melody note: " << midiNote << std::endl;
 
       Melody *voice = melManager.voice();
       if (!voice) return;
@@ -1181,20 +1218,6 @@ public:
   }
 
 
-
-  void updateMelody(){
-    if (noteDecision.currentChordIndex < 0 || 
-        noteDecision.currentChordIndex >= noteDecision.chordNames.size()) {
-        std::cerr << "Invalid currentChordIndex: " << noteDecision.currentChordIndex << std::endl;
-        return;
-    }
-
-    std::string currentChord = noteDecision.chordNames[noteDecision.currentChordIndex];
-    currentMelody = noteDecision.generateLSystemMelody(currentChord);
-    currentMelodyIndex = 0;
-    melodyTimeAccum = 0.0f;
-    currentMelNote = -1;
-  }
 
 
   void onExit() override { imguiShutdown(); }
